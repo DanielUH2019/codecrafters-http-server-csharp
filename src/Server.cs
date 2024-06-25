@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 
 
 var server = new TcpListener(IPAddress.Any, 4221);
@@ -11,18 +12,17 @@ while (true)
     var socket = server.AcceptSocket(); // Wait for client
     var requestLines = ReadRequestAsLines(socket).ToList();
     var requestLine = ParseRequestLine(requestLines[0]);
-
-    if (requestLine.RequestTarget == "/")
-    {
-        socket.Send(Encoding.UTF8.GetBytes(BuildResponse("HTTP/1.1", 200, body: "Hello World!")));
-    }
-    else
-    {
-        socket.Send(Encoding.UTF8.GetBytes(BuildResponse("HTTP/1.1", 404, "Not Found")));
-    }
+    socket.Send(BuildResponseBytes(requestLine));
 }
 
-static string BuildResponse(string httpVersion, int statusCode, string phrase = "OK", string headers = "", string body = "")
+static byte[] BuildResponseBytes(RequestLine requestLine) => requestLine.RequestTarget switch
+{
+    "/" => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 200)),
+    var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(BuildEchoResponse(target[6..])),
+    _ => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 404, "Not Found"))
+};
+
+static string BuildResponseString(string httpVersion, int statusCode, string phrase = "OK", string headers = "", string body = "")
 {
     var response = new StringBuilder($"{httpVersion} {statusCode} {phrase}\r\n");
     response.Append($"{headers}\r\n");
@@ -60,6 +60,15 @@ static IEnumerable<string> ReadRequestAsLines(Socket socket)
     return finalData.Split("\r\n");
 }
 
+static string BuildEchoResponse(string text)
+{
+    var headersBuilder = new StringBuilder();
+    headersBuilder.Append("Content-Type: text/plain\r\n");
+    headersBuilder.Append($"Content-Length: {text.Length}\r\n");
+    var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: text);
+    return response;
+}
+
 record RequestLine(HttpMethod Method, string RequestTarget, string HttpVersion);
 
 enum HttpMethod
@@ -72,3 +81,8 @@ enum HttpMethod
 
 
 
+partial class Program
+{
+    [GeneratedRegex(@"^/echo/.*$")]
+    private static partial Regex EchoRegex();
+}
