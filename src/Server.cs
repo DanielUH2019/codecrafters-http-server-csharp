@@ -12,13 +12,14 @@ while (true)
     var socket = server.AcceptSocket(); // Wait for client
     var requestLines = ReadRequestAsLines(socket).ToList();
     var requestLine = ParseRequestLine(requestLines[0]);
-    socket.Send(BuildResponseBytes(requestLine));
+    socket.Send(BuildResponseBytes(requestLine, requestLines.Skip(1).ToArray()));
 }
 
-static byte[] BuildResponseBytes(RequestLine requestLine) => requestLine.RequestTarget switch
+static byte[] BuildResponseBytes(RequestLine requestLine, string[] headersLines) => requestLine.RequestTarget switch
 {
     "/" => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 200)),
-    var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(BuildEchoResponse(target[6..])),
+    var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(EchoHandler(target[6..])),
+    "/user-agent" => Encoding.UTF8.GetBytes(UserAgentHandler(headersLines)),
     _ => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 404, "Not Found"))
 };
 
@@ -60,12 +61,24 @@ static IEnumerable<string> ReadRequestAsLines(Socket socket)
     return finalData.Split("\r\n");
 }
 
-static string BuildEchoResponse(string text)
+static string EchoHandler(string text)
 {
     var headersBuilder = new StringBuilder();
     headersBuilder.Append("Content-Type: text/plain\r\n");
     headersBuilder.Append($"Content-Length: {text.Length}\r\n");
     var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: text);
+    return response;
+}
+
+static string UserAgentHandler(string[] headersLines)
+{
+    var userAgent = headersLines[1];
+    var value = userAgent.Split(": ")[1];
+    // Build response
+    var headersBuilder = new StringBuilder();
+    headersBuilder.Append("Content-Type: text/plain\r\n");
+    headersBuilder.Append($"Content-Length: {value.Length}\r\n");
+    var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: value);
     return response;
 }
 
