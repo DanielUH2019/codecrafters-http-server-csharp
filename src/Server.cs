@@ -6,28 +6,28 @@ using System.Text.RegularExpressions;
 
 var server = new TcpListener(IPAddress.Any, 4221);
 server.Start();
-
 while (true)
 {
-    await HandleRequest(server);
+    await HandleRequest(server, args);
 }
 
-static async Task HandleRequest(TcpListener server)
+static async Task HandleRequest(TcpListener server, string[] args)
 {
     var socket = await server.AcceptSocketAsync();
     var networkStream = new NetworkStream(socket);
     var requestLines = (await ReadRequestAsLines(networkStream)).ToList();
     var requestLine = ParseRequestLine(requestLines[0]);
-    var responseBytes = BuildResponseBytes(requestLine, requestLines.Skip(1).ToArray());
+    var responseBytes = BuildResponseBytes(requestLine, requestLines.Skip(1).ToArray(), args);
     await networkStream.WriteAsync(responseBytes);
     socket.Close();
 }
 
-static byte[] BuildResponseBytes(RequestLine requestLine, string[] headersLines) => requestLine.RequestTarget switch
+static byte[] BuildResponseBytes(RequestLine requestLine, string[] headersLines, string[] args) => requestLine.RequestTarget switch
 {
     "/" => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 200)),
     var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(EchoHandler(target[6..])),
     "/user-agent" => Encoding.UTF8.GetBytes(UserAgentHandler(headersLines)),
+    var target when FilesRegex().IsMatch(target) => Encoding.UTF8.GetBytes(FilesHandler(target[7..], args)),
     _ => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 404, "Not Found"))
 };
 
@@ -90,6 +90,22 @@ static string UserAgentHandler(string[] headersLines)
     return response;
 }
 
+static string FilesHandler(string fileName, string[] args)
+{
+    var filePath = Path.Combine(args[1], fileName);
+    if (!File.Exists(filePath))
+    {
+        return BuildResponseString("HTTP/1.1", 404, "Not Found");
+    }
+
+    var fileContent = File.ReadAllText(filePath);
+    var headersBuilder = new StringBuilder();
+    headersBuilder.Append("Content-Type: application/octet-stream\r\n");
+    headersBuilder.Append($"Content-Length: {fileContent.Length}\r\n");
+    var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: fileContent);
+    return response;
+}
+
 record RequestLine(HttpMethod Method, string RequestTarget, string HttpVersion);
 
 enum HttpMethod
@@ -100,10 +116,11 @@ enum HttpMethod
     DELETE
 }
 
-
-
 partial class Program
 {
     [GeneratedRegex(@"^/echo/.*$")]
     private static partial Regex EchoRegex();
+
+    [GeneratedRegex(@"^/files/.*$")]
+    private static partial Regex FilesRegex();
 }
