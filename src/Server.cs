@@ -9,10 +9,18 @@ server.Start();
 
 while (true)
 {
-    var socket = server.AcceptSocket(); // Wait for client
-    var requestLines = ReadRequestAsLines(socket).ToList();
+    await HandleRequest(server);
+}
+
+static async Task HandleRequest(TcpListener server)
+{
+    var socket = await server.AcceptSocketAsync();
+    var networkStream = new NetworkStream(socket);
+    var requestLines = (await ReadRequestAsLines(networkStream)).ToList();
     var requestLine = ParseRequestLine(requestLines[0]);
-    socket.Send(BuildResponseBytes(requestLine, requestLines.Skip(1).ToArray()));
+    var responseBytes = BuildResponseBytes(requestLine, requestLines.Skip(1).ToArray());
+    await networkStream.WriteAsync(responseBytes);
+    socket.Close();
 }
 
 static byte[] BuildResponseBytes(RequestLine requestLine, string[] headersLines) => requestLine.RequestTarget switch
@@ -42,13 +50,13 @@ static RequestLine ParseRequestLine(string requestLine)
     return new RequestLine(httpMethod, requestTarget, httpVersion);
 }
 
-static IEnumerable<string> ReadRequestAsLines(Socket socket)
+static async Task<IEnumerable<string>> ReadRequestAsLines(NetworkStream stream)
 {
     var buffer = new byte[1024];
     var receivedData = new StringBuilder();
 
     int bytesReceived;
-    while ((bytesReceived = socket.Receive(buffer)) > 0)
+    while ((bytesReceived = await stream.ReadAsync(buffer)) > 0)
     {
         receivedData.Append(Encoding.UTF8.GetString(buffer, 0, bytesReceived));
         if (receivedData.ToString().Contains("\r\n\r\n"))
