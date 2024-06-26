@@ -1,3 +1,5 @@
+
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -26,19 +28,32 @@ static async Task HandleRequest(TcpListener server, string[] args)
 
 static async Task<byte[]> BuildResponseBytes(RequestLine requestLine, string[] headersLines, string body, string[] args) => requestLine.RequestTarget switch
 {
-    "/" => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 200)),
-    var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(EchoHandler(target[6..], headersLines)),
-    "/user-agent" => Encoding.UTF8.GetBytes(UserAgentHandler(headersLines)),
-    var target when FilesRegex().IsMatch(target) => Encoding.UTF8.GetBytes(await FilesHandlerAsync(requestLine, body, args)),
-    _ => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 404, "Not Found"))
+    "/" => BuildResponse("HTTP/1.1", 200),
+    var target when EchoRegex().IsMatch(target) => EchoHandler(target[6..], headersLines),
+    "/user-agent" => UserAgentHandler(headersLines),
+    var target when FilesRegex().IsMatch(target) => await FilesHandlerAsync(requestLine, body, args),
+    _ => BuildResponse("HTTP/1.1", 404, "Not Found")
 };
 
-static string BuildResponseString(string httpVersion, int statusCode, string phrase = "OK", string headers = "", string body = "")
+static byte[] BuildResponse(string httpVersion, int statusCode, string phrase = "OK", string headers = "", string body = "", bool useCompression = false)
 {
     var response = new StringBuilder($"{httpVersion} {statusCode} {phrase}\r\n");
+    if (useCompression)
+    {
+        var compressedText = GzipCompressText(body);
+        var headersBuilder = new StringBuilder(headers);
+        headersBuilder.Append("Content-Encoding: gzip\r\n");
+        headersBuilder.Append($"Content-Length: {compressedText.Length}\r\n");
+        response.Append($"{headersBuilder.ToString()}\r\n");
+        var responseBytes = Encoding.UTF8.GetBytes(response.ToString());
+        var finalResponse = new byte[responseBytes.Length + compressedText.Length];
+        Buffer.BlockCopy(responseBytes, 0, finalResponse, 0, responseBytes.Length);
+        Buffer.BlockCopy(compressedText, 0, finalResponse, responseBytes.Length, compressedText.Length);
+        return finalResponse;
+    }
     response.Append($"{headers}\r\n");
     response.Append(body);
-    return response.ToString();
+    return Encoding.UTF8.GetBytes(response.ToString());
 }
 
 
@@ -79,21 +94,23 @@ static string? ParseAcceptEncoding(string[] headersLines)
     return supportedEncoding;
 }
 
-static string EchoHandler(string text, string[] headersLines)
+static byte[] EchoHandler(string text, string[] headersLines)
 {
     var headersBuilder = new StringBuilder();
-    headersBuilder.Append("Content-Type: text/plain\r\n");
-    headersBuilder.Append($"Content-Length: {text.Length}\r\n");
+
     var encoding = ParseAcceptEncoding(headersLines);
-    if (encoding == "gzip") 
+    // byte[] compressedText;
+    var useCompression = encoding == "gzip";
+    if (!useCompression)
     {
-        headersBuilder.Append("Content-Encoding: gzip\r\n");
+        headersBuilder.Append($"Content-Length: {text.Length}\r\n");
     }
-    var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: text);
+    headersBuilder.Append("Content-Type: text/plain\r\n");
+    var response = BuildResponse("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: text, useCompression: useCompression);
     return response;
 }
 
-static string UserAgentHandler(string[] headersLines)
+static byte[] UserAgentHandler(string[] headersLines)
 {
     var userAgent = headersLines[1];
     var value = userAgent.Split(": ")[1];
@@ -101,11 +118,11 @@ static string UserAgentHandler(string[] headersLines)
     var headersBuilder = new StringBuilder();
     headersBuilder.Append("Content-Type: text/plain\r\n");
     headersBuilder.Append($"Content-Length: {value.Length}\r\n");
-    var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: value);
+    var response = BuildResponse("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: value);
     return response;
 }
 
-static async Task<string> FilesHandlerAsync(RequestLine requestLine, string content, string[] args)
+static async Task<byte[]> FilesHandlerAsync(RequestLine requestLine, string content, string[] args)
 {
     var fileName = requestLine.RequestTarget[7..];
     var filesPath = args[1];
@@ -113,32 +130,32 @@ static async Task<string> FilesHandlerAsync(RequestLine requestLine, string cont
     {
         HttpMethod.GET => GetFile(fileName, filesPath),
         HttpMethod.POST => await CreateFileAsync(fileName, filesPath, content),
-        _ => BuildResponseString("HTTP/1.1", 405, "Method Not Allowed"),
+        _ => BuildResponse("HTTP/1.1", 405, "Method Not Allowed"),
     };
 }
 
-static string GetFile(string name, string path)
+static byte[] GetFile(string name, string path)
 {
     var filePath = Path.Combine(path, name);
     if (!File.Exists(filePath))
     {
-        return BuildResponseString("HTTP/1.1", 404, "Not Found");
+        return BuildResponse("HTTP/1.1", 404, "Not Found");
     }
 
     var fileContent = File.ReadAllText(filePath);
     var headersBuilder = new StringBuilder();
     headersBuilder.Append("Content-Type: application/octet-stream\r\n");
     headersBuilder.Append($"Content-Length: {fileContent.Length}\r\n");
-    var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: fileContent);
+    var response = BuildResponse("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: fileContent);
     return response;
 }
 
-static async Task<string> CreateFileAsync(string name, string path, string content)
+static async Task<byte[]> CreateFileAsync(string name, string path, string content)
 {
     var filePath = Path.Combine(path, name);
     if (File.Exists(filePath))
     {
-        return BuildResponseString("HTTP/1.1", 409, "Conflict");
+        return BuildResponse("HTTP/1.1", 409, "Conflict");
     }
 
     using (var sw = new StreamWriter(filePath))
@@ -146,7 +163,18 @@ static async Task<string> CreateFileAsync(string name, string path, string conte
         await sw.WriteAsync(content);
     }
 
-    return BuildResponseString("HTTP/1.1", 201, "Created");
+    return BuildResponse("HTTP/1.1", 201, "Created");
+}
+
+static byte[] GzipCompressText(string text)
+{
+    using var outputStream = new MemoryStream();
+    using (var gzipStream = new GZipStream(outputStream, CompressionMode.Compress))
+    using (var writer = new StreamWriter(gzipStream))
+    {
+        writer.Write(text);
+    }
+    return outputStream.ToArray();
 }
 
 record RequestLine(HttpMethod Method, string RequestTarget, string HttpVersion);
