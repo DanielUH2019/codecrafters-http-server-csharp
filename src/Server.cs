@@ -27,7 +27,7 @@ static async Task HandleRequest(TcpListener server, string[] args)
 static async Task<byte[]> BuildResponseBytes(RequestLine requestLine, string[] headersLines, string body, string[] args) => requestLine.RequestTarget switch
 {
     "/" => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 200)),
-    var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(EchoHandler(target[6..])),
+    var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(EchoHandler(target[6..], headersLines)),
     "/user-agent" => Encoding.UTF8.GetBytes(UserAgentHandler(headersLines)),
     var target when FilesRegex().IsMatch(target) => Encoding.UTF8.GetBytes(await FilesHandlerAsync(requestLine, body, args)),
     _ => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 404, "Not Found"))
@@ -71,11 +71,24 @@ static async Task<IEnumerable<string>> ReadRequestAsLines(NetworkStream stream)
     return finalData.Split("\r\n");
 }
 
-static string EchoHandler(string text)
+static string? ParseAcceptEncoding(string[] headersLines)
+{
+    var acceptEncoding = headersLines.FirstOrDefault(x => x.StartsWith("Accept-Encoding:"));
+    var encodings = acceptEncoding?.Split(": ")[1].Split(", ");
+    var supportedEncoding = encodings?.FirstOrDefault(x => x.Equals("gzip"));
+    return supportedEncoding;
+}
+
+static string EchoHandler(string text, string[] headersLines)
 {
     var headersBuilder = new StringBuilder();
     headersBuilder.Append("Content-Type: text/plain\r\n");
     headersBuilder.Append($"Content-Length: {text.Length}\r\n");
+    var encoding = ParseAcceptEncoding(headersLines);
+    if (encoding == "gzip") 
+    {
+        headersBuilder.Append("Content-Encoding: gzip\r\n");
+    }
     var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: text);
     return response;
 }
