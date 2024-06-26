@@ -17,17 +17,19 @@ static async Task HandleRequest(TcpListener server, string[] args)
     var networkStream = new NetworkStream(socket);
     var requestLines = (await ReadRequestAsLines(networkStream)).ToList();
     var requestLine = ParseRequestLine(requestLines[0]);
-    var responseBytes = BuildResponseBytes(requestLine, requestLines.Skip(1).ToArray(), args);
-    await networkStream.WriteAsync(responseBytes);
+    var headersLines = requestLines.Skip(1).Take(requestLines.Count - 2).ToArray();
+    var body = requestLines.Last();
+    var responseBytes = BuildResponseBytes(requestLine, headersLines, body, args);
+    await networkStream.WriteAsync(await responseBytes);
     socket.Close();
 }
 
-static byte[] BuildResponseBytes(RequestLine requestLine, string[] headersLines, string[] args) => requestLine.RequestTarget switch
+static async Task<byte[]> BuildResponseBytes(RequestLine requestLine, string[] headersLines, string body, string[] args) => requestLine.RequestTarget switch
 {
     "/" => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 200)),
     var target when EchoRegex().IsMatch(target) => Encoding.UTF8.GetBytes(EchoHandler(target[6..])),
     "/user-agent" => Encoding.UTF8.GetBytes(UserAgentHandler(headersLines)),
-    var target when FilesRegex().IsMatch(target) => Encoding.UTF8.GetBytes(FilesHandler(target[7..], args)),
+    var target when FilesRegex().IsMatch(target) => Encoding.UTF8.GetBytes(await FilesHandlerAsync(requestLine, body, args)),
     _ => Encoding.UTF8.GetBytes(BuildResponseString("HTTP/1.1", 404, "Not Found"))
 };
 
@@ -90,9 +92,21 @@ static string UserAgentHandler(string[] headersLines)
     return response;
 }
 
-static string FilesHandler(string fileName, string[] args)
+static async Task<string> FilesHandlerAsync(RequestLine requestLine, string content, string[] args)
 {
-    var filePath = Path.Combine(args[1], fileName);
+    var fileName = requestLine.RequestTarget[7..];
+    var filesPath = args[1];
+    return requestLine.Method switch
+    {
+        HttpMethod.GET => GetFile(fileName, filesPath),
+        HttpMethod.POST => await CreateFileAsync(fileName, filesPath, content),
+        _ => BuildResponseString("HTTP/1.1", 405, "Method Not Allowed"),
+    };
+}
+
+static string GetFile(string name, string path)
+{
+    var filePath = Path.Combine(path, name);
     if (!File.Exists(filePath))
     {
         return BuildResponseString("HTTP/1.1", 404, "Not Found");
@@ -104,6 +118,22 @@ static string FilesHandler(string fileName, string[] args)
     headersBuilder.Append($"Content-Length: {fileContent.Length}\r\n");
     var response = BuildResponseString("HTTP/1.1", 200, headers: headersBuilder.ToString(), body: fileContent);
     return response;
+}
+
+static async Task<string> CreateFileAsync(string name, string path, string content)
+{
+    var filePath = Path.Combine(path, name);
+    if (File.Exists(filePath))
+    {
+        return BuildResponseString("HTTP/1.1", 409, "Conflict");
+    }
+
+    using (var sw = new StreamWriter(filePath))
+    {
+        await sw.WriteAsync(content);
+    }
+
+    return BuildResponseString("HTTP/1.1", 201, "Created");
 }
 
 record RequestLine(HttpMethod Method, string RequestTarget, string HttpVersion);
